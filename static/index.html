@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>X.509 证书链验证实验台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>X.509 证书链验证实验台</h1>
+  <div class="subtitle">本地离线 · 候选链枚举 · 逐链规则核验 · 稳定选链（RFC 5280 / RFC 6125）</div>
+</header>
+
+<main>
+  <!-- ========== 左栏：输入 ========== -->
+  <section class="panel input-panel">
+    <h2>1. 输入材料</h2>
+
+    <div class="dropzone" id="dz-leaf">
+      <div class="dz-title">叶证书（可多本，PEM/DER）</div>
+      <input type="file" id="in-leaf" multiple accept=".pem,.crt,.cer,.der,application/x-pem-file">
+      <div class="file-list" id="list-leaf"></div>
+    </div>
+
+    <div class="dropzone" id="dz-inter">
+      <div class="dz-title">中间证书（可多本，可含交叉签发/同名证书）</div>
+      <input type="file" id="in-inter" multiple accept=".pem,.crt,.cer,.der">
+      <div class="file-list" id="list-inter"></div>
+    </div>
+
+    <div class="dropzone" id="dz-anchor">
+      <div class="dz-title">本地信任锚（可多本）</div>
+      <input type="file" id="in-anchor" multiple accept=".pem,.crt,.cer,.der">
+      <div class="file-list" id="list-anchor"></div>
+    </div>
+
+    <h2>2. 校验参数</h2>
+    <label class="field">
+      <span>校验时间（UTC，ISO 8601；留空 = 当前时间）</span>
+      <input type="text" id="in-time" placeholder="2025-06-01T00:00:00Z">
+    </label>
+    <label class="field">
+      <span>DNS 名称（主机名）</span>
+      <input type="text" id="in-dns" placeholder="www.example.com">
+    </label>
+    <label class="field">
+      <span>证书用途（EKU）</span>
+      <select id="in-purpose">
+        <option value="">（不检查 EKU）</option>
+        <option value="serverAuth" selected>TLS WWW 服务器认证 (serverAuth)</option>
+        <option value="clientAuth">TLS WWW 客户端认证 (clientAuth)</option>
+        <option value="codeSigning">可执行代码签名 (codeSigning)</option>
+        <option value="emailProtection">电子邮件保护 (emailProtection)</option>
+        <option value="timeStamping">时间戳 (timeStamping)</option>
+        <option value="OCSPSigning">OCSP 响应签名 (OCSPSigning)</option>
+      </select>
+    </label>
+
+    <div class="buttons">
+      <button id="btn-run" class="primary">开始链验证</button>
+      <button id="btn-clear">清空</button>
+    </div>
+    <div id="error-box" class="error-box" hidden></div>
+
+    <h2>3. 内置样例</h2>
+    <div id="samples" class="samples">加载中…</div>
+
+    <h2>4. 信任锚替换预演</h2>
+    <div class="dropzone" id="dz-rehearse-anchor">
+      <div class="dz-title">替代锚（可多本；不上传 = 预演移除全部锚）</div>
+      <input type="file" id="in-rehearse-anchor" multiple accept=".pem,.crt,.cer,.der">
+      <div class="file-list" id="list-rehearse-anchor"></div>
+    </div>
+    <div class="buttons">
+      <button id="btn-open-rehearse" class="primary">选择历史会话并预演</button>
+    </div>
+    <div class="hint">只读预演：不新增会话、不改写原报告。旧会话缺少原始证书时标为不可预演；
+      基线重放与存档不一致时标为基线漂移（不归因于锚替换）。</div>
+  </section>
+
+  <!-- ========== 中栏：图 ========== -->
+  <section class="panel graph-panel">
+    <div class="panel-head">
+      <h2>证书关系图</h2>
+      <div class="legend">
+        <span><i class="dot leaf"></i>叶证书</span>
+        <span><i class="dot inter"></i>中间证书</span>
+        <span><i class="dot anchor"></i>信任锚</span>
+        <span><i class="line ok"></i>签名通过</span>
+        <span><i class="line bad"></i>签名失败</span>
+        <span><i class="line sel"></i>选中链</span>
+      </div>
+    </div>
+    <canvas id="graph" width="860" height="620"></canvas>
+    <div class="hint">点击节点查看证书详情；鼠标悬停查看签发方向。边由「主体→签发者」绘制。</div>
+  </section>
+
+  <!-- ========== 右栏：结果 ========== -->
+  <section class="panel result-panel">
+    <div class="panel-head">
+      <h2>候选链与淘汰证据</h2>
+      <select id="leaf-select" hidden></select>
+    </div>
+    <div id="summary-bar" class="summary-bar"></div>
+    <div id="chains" class="chains">
+      <div class="placeholder">上传证书并运行验证后，此处列出每一条无重复候选路径及其首个失败节点、规则与证据。</div>
+    </div>
+  </section>
+</main>
+
+<!-- 证书详情弹层 -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-box">
+    <button id="modal-close" class="modal-close">×</button>
+    <pre id="modal-content"></pre>
+  </div>
+</div>
+
+<!-- 信任锚替换预演弹层 -->
+<div id="rehearse-modal" class="modal modal-wide" hidden>
+  <div class="modal-box">
+    <button id="rehearse-close" class="modal-close">×</button>
+    <h2 class="reh-title">信任锚替换预演</h2>
+    <div class="reh-controls">
+      <label class="reh-pick"><input type="checkbox" id="reh-toggle-all"> 全选可预演会话</label>
+      <button id="btn-run-rehearse" class="primary">用替代锚重放所选会话</button>
+      <span id="rehearse-error" class="reh-error"></span>
+    </div>
+    <div id="reh-session-list" class="reh-session-list">加载历史会话中…</div>
+    <div id="reh-results" class="reh-results"></div>
+  </div>
+</div>
+
+<footer>
+  全程不访问外网：无 CRL / OCSP / AIA 抓取；信任仅来自您上传的锚证书。
+  <a href="#" id="link-history">历史会话</a>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

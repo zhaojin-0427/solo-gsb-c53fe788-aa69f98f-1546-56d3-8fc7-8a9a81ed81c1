@@ -1,0 +1,21 @@
+services:
+  x509-lab:
+    build: .
+    image: x509-chain-lab:latest
+    container_name: x509-chain-lab
+    ports:
+      - "8000:8000"
+    volumes:
+      - lab-data:/app/data
+    networks:
+      - labnet
+    restart: unless-stopped
+
+# internal: true —— 容器无任何出站能力（硬性保证“校验过程不得访问外网”），
+# 但宿主机仍可通过映射端口 8000 访问页面与 API。
+networks:
+  labnet:
+    internal: true
+
+volumes:
+  lab-data:
