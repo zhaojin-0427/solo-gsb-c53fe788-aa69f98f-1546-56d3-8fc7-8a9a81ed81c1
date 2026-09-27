@@ -1,4 +1,4 @@
-"""FastAPI 入口：证书上传、离线链核验、历史会话、内置样例、静态页面。"""
+"""FastAPI 入口：证书上传、离线链核验、历史会话、内置样例、离线 CSR 签发、静态页面。"""
 from __future__ import annotations
 
 import os
@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import cert_core as cc
 from . import db as database
+from . import issuer as iss
 from . import rehearse as rh
 from .service import AnalysisError, analyze
 
@@ -184,6 +185,38 @@ async def api_rehearse(
         replacement,
     )
     return JSONResponse(report)
+
+
+# ---------------------------------------------------------------- 离线 CSR 签发
+@app.post("/api/issue")
+async def api_issue(
+    ca_cert: UploadFile = File(...),
+    ca_key: UploadFile = File(...),
+    csr: UploadFile = File(...),
+    not_before: str = Form(...),
+    not_after: str = Form(...),
+    idem_key: str = Form(...),
+):
+    """离线签发：CA 证书 + 匹配私钥 + 含 DNS SAN 的 CSR → PEM 叶证书。
+
+    私钥字节仅存在于本次请求内存中（用于签名运算），不落库、不写日志；
+    幂等语义与序列号唯一性由 app.issuer + SQLite 唯一约束保证。
+    """
+    try:
+        result = iss.issue(
+            DB_PATH,
+            ca_cert_bytes=await ca_cert.read(),
+            ca_key_bytes=await ca_key.read(),
+            csr_bytes=await csr.read(),
+            not_before_str=not_before,
+            not_after_str=not_after,
+            idem_key=idem_key,
+        )
+    except iss.IdempotencyConflict as exc:
+        raise HTTPException(409, str(exc))
+    except iss.IssuanceError as exc:
+        raise HTTPException(400, str(exc))
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------- 前端

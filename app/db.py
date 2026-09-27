@@ -36,6 +36,26 @@ CREATE TABLE IF NOT EXISTS session_certs (
     cert_pem TEXT NOT NULL,
     PRIMARY KEY (session_id, role, position)
 );
+
+-- 离线 CSR 签发的幂等记录：单行同时承载幂等键、请求哈希、序列号与证书 PEM，
+-- 一次 INSERT 即完成「证书 + 序列号 + 幂等记录」的原子提交（失败整体回滚）。
+CREATE TABLE IF NOT EXISTS issuance_records (
+    idem_key TEXT PRIMARY KEY,          -- 幂等键
+    request_hash TEXT NOT NULL,         -- 规范化 CSR + 签发者指纹 + 起止时间 的 SHA-256
+    issuer_fp TEXT NOT NULL,            -- 签发者证书 SHA-256 指纹
+    issuer_spki_fp TEXT NOT NULL,       -- 签发者公钥（SPKI）：序列号唯一性作用域
+    serial_hex TEXT NOT NULL,           -- 叶证书序列号（十六进制）
+    subject TEXT NOT NULL,
+    dns_names TEXT NOT NULL,            -- JSON 数组
+    not_before TEXT NOT NULL,
+    not_after TEXT NOT NULL,
+    cert_pem TEXT NOT NULL,             -- 签发的叶证书（PEM），幂等重放时原样返回
+    created_at TEXT NOT NULL
+);
+
+-- 同一签发者公钥下序列号不得重复（硬约束，配合应用层的确定性派生）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issuance_serial
+    ON issuance_records (issuer_spki_fp, serial_hex);
 """
 
 ROLE_KEYS = ("leaf", "intermediate", "anchor")
@@ -138,3 +158,45 @@ def get_session_certs(db_path, session_id: int) -> dict[str, list[str]]:
     for r in rows:
         out[r["role"]].append(r["cert_pem"])
     return out
+
+
+# ============================================================================
+# 离线 CSR 签发：幂等记录
+# ============================================================================
+def get_issuance(db_path, idem_key: str) -> dict | None:
+    """按幂等键查询签发记录；不存在返回 None。"""
+    with _LOCK, connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM issuance_records WHERE idem_key = ?", (idem_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["dns_names"] = json.loads(d["dns_names"])
+        return d
+
+
+def commit_issuance(db_path, record: dict) -> None:
+    """原子提交签发记录（证书 PEM + 序列号 + 幂等键在同一行、同一事务）。
+
+    idem_key 冲突或 (issuer_spki_fp, serial_hex) 冲突时抛出
+    sqlite3.IntegrityError，由调用方决定重放 / 409 / 重派生序列号。
+    """
+    with _LOCK, connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO issuance_records
+               (idem_key, request_hash, issuer_fp, issuer_spki_fp, serial_hex,
+                subject, dns_names, not_before, not_after, cert_pem, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (record["idem_key"], record["request_hash"], record["issuer_fp"],
+             record["issuer_spki_fp"], record["serial_hex"], record["subject"],
+             json.dumps(record["dns_names"], ensure_ascii=False),
+             record["not_before"], record["not_after"], record["cert_pem"],
+             record["created_at"]),
+        )
+
+
+def count_issuances(db_path) -> int:
+    """签发记录总数（测试与自检用）。"""
+    with _LOCK, connect(db_path) as conn:
+        return conn.execute("SELECT COUNT(*) AS c FROM issuance_records").fetchone()["c"]

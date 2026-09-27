@@ -482,6 +482,114 @@ $("link-history").addEventListener("click", async (e) => {
 
 loadSamples();
 
+/* ================= 离线 CSR 签发 ================= */
+const issueState = { ca: null, key: null, csr: null, lastPem: null, lastName: "leaf.pem", lastDns: [] };
+
+function bindIssueFile(inputId, listId, key) {
+  const input = $(inputId), list = $(listId);
+  input.addEventListener("change", () => {
+    issueState[key] = input.files[0] || null;
+    renderFileList(list, input.files);
+  });
+}
+bindIssueFile("in-issue-ca", "list-issue-ca", "ca");
+bindIssueFile("in-issue-key", "list-issue-key", "key");
+bindIssueFile("in-issue-csr", "list-issue-csr", "csr");
+
+$("btn-idem-gen").addEventListener("click", () => {
+  $("in-issue-idem").value = "idem-" + crypto.randomUUID();
+});
+
+$("btn-issue").addEventListener("click", runIssue);
+
+async function runIssue() {
+  const errBox = $("issue-error");
+  errBox.hidden = true;
+  $("issue-result").hidden = true;
+  if (!issueState.ca || !issueState.key || !issueState.csr) {
+    errBox.textContent = "请上传 CA 证书、CA 私钥与 CSR 三个文件";
+    errBox.hidden = false;
+    return;
+  }
+  const fd = new FormData();
+  fd.append("ca_cert", issueState.ca);
+  fd.append("ca_key", issueState.key);
+  fd.append("csr", issueState.csr);
+  fd.append("not_before", $("in-issue-nb").value.trim());
+  fd.append("not_after", $("in-issue-na").value.trim());
+  fd.append("idem_key", $("in-issue-idem").value.trim());
+
+  const btn = $("btn-issue");
+  btn.disabled = true;
+  btn.textContent = "签发中…";
+  try {
+    const resp = await fetch("/api/issue", { method: "POST", body: fd });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const prefix = resp.status === 409 ? "幂等冲突（409）：" : "签发被拒绝：";
+      throw new Error(prefix + (data.detail || "请求失败"));
+    }
+    issueState.lastPem = data.cert_pem;
+    issueState.lastName = data.download_name || "issued-leaf.pem";
+    issueState.lastDns = data.dns_names || [];
+    renderIssueResult(data);
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "签发叶证书";
+  }
+}
+
+function renderIssueResult(data) {
+  const box = $("issue-result");
+  box.hidden = false;
+  box.innerHTML =
+    `<div class="issue-head">` +
+    `<span class="badge ok">签发成功</span>` +
+    (data.idempotent_replay
+      ? `<span class="badge sel">幂等重放 · 与首次签发字节一致</span>`
+      : `<span class="badge info">新签发</span>`) +
+    `</div>` +
+    `<dl class="issue-meta">` +
+    `<div><dt>主体</dt><dd>${escapeHtml(data.subject)}</dd></div>` +
+    `<div><dt>签发者</dt><dd>${escapeHtml(data.issuer)}</dd></div>` +
+    `<div><dt>序列号</dt><dd class="mono">${escapeHtml(data.serial)}</dd></div>` +
+    `<div><dt>有效期</dt><dd class="mono">${escapeHtml(data.not_before)} ~ ${escapeHtml(data.not_after)}</dd></div>` +
+    `<div><dt>DNS SAN</dt><dd>${data.dns_names.map(escapeHtml).join(", ")}</dd></div>` +
+    `<div><dt>约束/用途</dt><dd>${escapeHtml(data.basic_constraints)} · ${escapeHtml(data.key_usage)} · EKU ${escapeHtml(data.eku)}</dd></div>` +
+    `<div><dt>SHA-256 指纹</dt><dd class="mono">${escapeHtml(data.fingerprint)}</dd></div>` +
+    `</dl>` +
+    `<div class="buttons">` +
+    `<button id="btn-issue-download" class="primary">下载 PEM 叶证书</button>` +
+    `<button id="btn-issue-to-lab" title="把签发的叶证书与 CA 证书载入上方链验证">载入链验证</button>` +
+    `</div>` +
+    `<div class="hint">「载入链验证」：叶证书 → 第 1 区叶证书栏，CA 证书 → 信任锚栏，并预填 DNS 与 serverAuth。</div>`;
+
+  $("btn-issue-download").addEventListener("click", () => {
+    const blob = new Blob([issueState.lastPem], { type: "application/x-pem-file" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = issueState.lastName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  $("btn-issue-to-lab").addEventListener("click", () => {
+    const leafFile = new File([issueState.lastPem], issueState.lastName,
+      { type: "application/x-pem-file" });
+    state.files.leaf = [leafFile];
+    renderFileList($("list-leaf"), [leafFile]);
+    if (issueState.ca) {
+      state.files.anchors = [issueState.ca];
+      renderFileList($("list-anchor"), [issueState.ca]);
+    }
+    if (issueState.lastDns.length) $("in-dns").value = issueState.lastDns[0];
+    $("in-purpose").value = "serverAuth";
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+}
+
 /* ================= 信任锚替换预演 ================= */
 const rehState = { sessions: [], anchorFiles: [] };
 

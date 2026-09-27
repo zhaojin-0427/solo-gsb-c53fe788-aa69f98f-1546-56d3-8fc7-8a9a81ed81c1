@@ -11,10 +11,14 @@
 5. 页面用 Canvas 绘制证书关系图（节点角色、签名失败边、同名虚框、选中链高亮、失败节点红圈）；
 6. **信任锚替换预演**：勾选多条历史会话并上传一组替代锚，按每次实验保存的叶证书、
    中间证书、原锚与校验时间/DNS/用途重放「基线」与「替代方案」，按叶证书指纹对齐报告
-   有效性翻转、选中链变化或无变化，并列两侧选中路径与新增/移除锚指纹。
+   有效性翻转、选中链变化或无变化，并列两侧选中路径与新增/移除锚指纹；
+7. **离线 CSR 签发**：上传 CA 证书、匹配私钥与含 DNS SAN 的 CSR，填写起止时间与幂等键，
+   签发并下载 PEM 叶证书（CA=false、serverAuth、适配叶公钥的 Key Usage）；
+   幂等键保证同键同参（含并发与重启后重试）返回字节相同的证书，异参返回 409。
 
 > **不做吊销检查，不访问外网**：没有 CRL、OCSP、AIA 抓取，也不加载系统信任库；
-> 信任仅来自您本次上传的锚证书。Docker Compose 中还给出了 `network_mode: "none"`
+> 信任仅来自您本次上传的锚证书；CSR 签发同样全程离线，CA 私钥仅用于本次请求的
+> 签名运算，不落库、不写日志。Docker Compose 中还给出了 `network_mode: "none"`
 > 的强制断网开关。
 
 ## 技术栈
@@ -23,7 +27,7 @@
 |---|---|
 | 后端 | Python 3.11 · FastAPI · uvicorn |
 | 密码学 | `cryptography`（RSA / RSA-PSS / ECDSA / Ed25519 / Ed448 / DSA 验签） |
-| 存储 | SQLite（标准库 `sqlite3`，WAL 模式，保存历史会话、按角色持久化的上传证书与完整结果） |
+| 存储 | SQLite（标准库 `sqlite3`，WAL 模式，保存历史会话、按角色持久化的上传证书、完整结果与签发幂等记录） |
 | 前端 | 原生 HTML / CSS / JavaScript + Canvas，**零第三方 JS、零 CDN** |
 | 部署 | Dockerfile + Docker Compose 一键启动 |
 
@@ -74,6 +78,7 @@ python3 -m venv .venv
 3. 点击 **开始链验证**。
 4. 中间看关系图，右侧查看每条候选链；点击任意节点可查看证书 JSON 详情。
 5. 也可以直接点击左下的**内置样例**卡片自动装载材料与建议参数。
+6. 需要签发新证书时，用左栏第 5 区「**离线 CSR 签发**」（见下节）。
 
 ## 信任锚替换预演（Trust-Anchor Replacement Rehearsal）
 
@@ -103,6 +108,42 @@ python3 -m venv .venv
 
 > 启动与访问方式不变：`docker compose up --build` 后访问 <http://localhost:8000/>，
 > 预演入口就在首页左栏；API 为 `POST /api/rehearse`。
+
+## 离线 CSR 签发（Idempotent CSR Issuance）
+
+首页左栏第 5 区「**离线 CSR 签发**」是一个本地微型 CA：全程离线，不访问任何外部服务。
+
+**使用步骤**：
+
+1. 上传 **CA 证书**（单本，PEM/DER）与**匹配的 CA 私钥**（单本，PEM/DER，未加密，
+   仅 RSA/EC；点「随机」可生成幂等键）；
+2. 上传 **CSR**（单本，PEM/DER PKCS#10，必须请求含 DNS 名称的 SAN 扩展，公钥仅 RSA/EC）；
+3. 填写**生效/失效时间**（UTC，ISO 8601）与**幂等键**；
+4. 点击「**签发叶证书**」→ 结果区展示证书摘要，可「**下载 PEM 叶证书**」，
+   或点「**载入链验证**」把叶证书与 CA 证书一键送回第 1 区做链验证。
+
+**签发前校验**（任一失败即拒绝，返回 400，不落库、不返回证书）：
+
+- CSR 自签名有效；CSR 公钥与 CA 私钥均为 RSA/EC；
+- CA 私钥与 CA 证书公钥匹配（SPKI 一致）；
+- CA 具备 CA 身份：Basic Constraints `cA=TRUE` 且 Key Usage 置 `keyCertSign`；
+- 起止时间有序（notBefore < notAfter）且落在 CA 有效期内；
+- CSR 请求的每个 DNS 名称均满足签发者的 Name Constraints（excluded 优先于 permitted）。
+
+**签发的叶证书**：`CA=FALSE`（critical）、EKU `serverAuth`、适配叶公钥的 Key Usage
+（RSA：`digitalSignature + keyEncipherment`；EC：`digitalSignature`）、SAN 仅含 CSR 中的
+DNS 名称、SKI/AKI 齐备，RSA 用 PKCS#1 v1.5 + SHA-256、EC 用 ECDSA + SHA-256 签名。
+
+**幂等与一致性语义**：
+
+- 幂等键绑定「规范化 CSR（DER 重编码）+ 签发者证书指纹 + 起止时间」；
+  **同键同参**（含并发请求与重启后重试）返回**字节相同**的证书（回放库存 PEM）；
+  **同键异参**返回 **409**；
+- 序列号在同一签发者公钥（SPKI）下不得重复：由请求确定派生 128 bit 序列号，
+  并由数据库 `(issuer_spki, serial)` 唯一索引兜底；
+- 证书、序列号与幂等记录在**同一 SQLite 事务**中原子提交：失败不留成功记录、不返回证书；
+- CA 私钥仅存在于本次请求内存用于签名：**不落库、不写日志、不随响应返回**；
+- 签发记录存于 SQLite `issuance_records` 表（Docker 卷 `lab-data`），重启后幂等重试仍有效。
 
 ## 内置实验场景（9 个）
 
@@ -186,6 +227,7 @@ python3 -m venv .venv
 | `GET` | `/api/sessions` | 历史会话列表（含 `replayable`：是否保存了可重放证书） |
 | `GET` | `/api/sessions/{id}` | 历史会话完整结果（图 + 全部候选链证据） |
 | `POST` | `/api/rehearse` | 信任锚替换预演：multipart 上传替代锚 `anchors`（可空）+ 重复字段 `session_ids`；只读重放并返回两侧差异 |
+| `POST` | `/api/issue` | 离线 CSR 签发：multipart 上传 `ca_cert`/`ca_key`/`csr`（各单本）+ `not_before`/`not_after`/`idem_key`；返回 PEM 叶证书与摘要；同键异参返回 409 |
 | `GET` | `/api/health` | 健康检查 |
 
 ## 目录结构
@@ -197,12 +239,14 @@ app/
   chain.py       # 候选图、DFS 无重复枚举、规则核验、证书摘要
   cert_core.py   # PEM/DER 解析、验签、名称规范化、DNS/名称约束匹配
   rehearse.py    # 信任锚替换预演：基线/替代只读重放、按叶指纹对齐、漂移判定
-  db.py          # SQLite 会话持久化 + 按角色持久化原始证书（PEM）
+  issuer.py      # 离线 CSR 签发：校验、确定性序列号、幂等提交、叶证书构建
+  db.py          # SQLite 会话持久化 + 按角色持久化原始证书（PEM）+ 签发幂等记录
 static/          # index.html / style.css / app.js（原生 JS）
 scripts/generate_samples.py
 tests/test_engine.py
 tests/test_edge_cases.py
 tests/test_rehearse.py
+tests/test_issuer.py
 data/samples/    # 生成的 9 个样例场景
 ```
 

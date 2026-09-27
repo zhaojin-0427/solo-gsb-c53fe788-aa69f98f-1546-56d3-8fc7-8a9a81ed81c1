@@ -9,7 +9,7 @@
 <body>
 <header>
   <h1>X.509 证书链验证实验台</h1>
-  <div class="subtitle">本地离线 · 候选链枚举 · 逐链规则核验 · 稳定选链（RFC 5280 / RFC 6125）</div>
+  <div class="subtitle">本地离线 · 候选链枚举 · 逐链规则核验 · 稳定选链 · 离线 CSR 签发（RFC 5280 / RFC 6125）</div>
 </header>
 
 <main>
@@ -77,6 +77,44 @@
     </div>
     <div class="hint">只读预演：不新增会话、不改写原报告。旧会话缺少原始证书时标为不可预演；
       基线重放与存档不一致时标为基线漂移（不归因于锚替换）。</div>
+
+    <h2>5. 离线 CSR 签发</h2>
+    <div class="dropzone" id="dz-issue-ca">
+      <div class="dz-title">CA 证书（单本，PEM/DER）</div>
+      <input type="file" id="in-issue-ca" accept=".pem,.crt,.cer,.der">
+      <div class="file-list" id="list-issue-ca"></div>
+    </div>
+    <div class="dropzone" id="dz-issue-key">
+      <div class="dz-title">CA 私钥（单本，PEM/DER，仅 RSA/EC，未加密）</div>
+      <input type="file" id="in-issue-key" accept=".pem,.key,.der">
+      <div class="file-list" id="list-issue-key"></div>
+    </div>
+    <div class="hint">私钥仅用于本次请求的签名运算：服务端不落库、不写日志、不随响应返回。</div>
+    <div class="dropzone" id="dz-issue-csr">
+      <div class="dz-title">CSR（单本，PEM/DER，须含 DNS SAN，仅 RSA/EC）</div>
+      <input type="file" id="in-issue-csr" accept=".pem,.csr,.der">
+      <div class="file-list" id="list-issue-csr"></div>
+    </div>
+    <label class="field">
+      <span>生效时间 notBefore（UTC，ISO 8601）</span>
+      <input type="text" id="in-issue-nb" placeholder="2026-01-01T00:00:00Z">
+    </label>
+    <label class="field">
+      <span>失效时间 notAfter（UTC，ISO 8601）</span>
+      <input type="text" id="in-issue-na" placeholder="2027-01-01T00:00:00Z">
+    </label>
+    <label class="field">
+      <span>幂等键（同键同参重试返回同一证书；异参返回 409）</span>
+      <div class="idem-row">
+        <input type="text" id="in-issue-idem" placeholder="order-2026-09-27-001">
+        <button id="btn-idem-gen" type="button" title="生成随机幂等键">随机</button>
+      </div>
+    </label>
+    <div class="buttons">
+      <button id="btn-issue" class="primary">签发叶证书</button>
+    </div>
+    <div id="issue-error" class="error-box" hidden></div>
+    <div id="issue-result" class="issue-result" hidden></div>
   </section>
 
   <!-- ========== 中栏：图 ========== -->
@@ -133,7 +171,7 @@
 </div>
 
 <footer>
-  全程不访问外网：无 CRL / OCSP / AIA 抓取；信任仅来自您上传的锚证书。
+  全程不访问外网：无 CRL / OCSP / AIA 抓取；信任仅来自您上传的锚证书；CSR 签发全程离线，私钥不落库。
   <a href="#" id="link-history">历史会话</a>
 </footer>
 

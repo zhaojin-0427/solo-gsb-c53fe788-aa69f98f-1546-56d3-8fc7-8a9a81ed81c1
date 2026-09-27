@@ -272,3 +272,21 @@ footer a { color: var(--accent); margin-left: 10px; }
   border-radius: 6px; padding: 6px 9px;
 }
 @media (max-width: 900px) { .reh-sides { grid-template-columns: 1fr; } }
+
+/* ---------- 离线 CSR 签发 ---------- */
+.idem-row { display: flex; gap: 6px; }
+.idem-row input { flex: 1; min-width: 0; }
+.idem-row button { flex-shrink: 0; padding: 7px 10px; }
+
+.issue-result {
+  margin-top: 10px; border: 1px solid rgba(53,196,141,.4); border-radius: 8px;
+  background: rgba(53,196,141,.07); padding: 10px 12px; font-size: 12.5px;
+}
+.issue-head { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.issue-result .badge { font-size: 11px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
+.badge.info { background: rgba(79,140,255,.15); color: var(--accent); border: 1px solid rgba(79,140,255,.45); }
+.issue-meta { margin: 0 0 8px; }
+.issue-meta div { display: flex; gap: 8px; padding: 2px 0; }
+.issue-meta dt { color: var(--muted); min-width: 88px; flex-shrink: 0; }
+.issue-meta dd { margin: 0; word-break: break-all; }
+.issue-meta .mono { font-family: monospace; font-size: 11.5px; }
